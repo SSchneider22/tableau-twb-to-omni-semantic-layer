@@ -1,0 +1,25 @@
+# Limitations（制限事項）
+
+- Tableau table calculations（WINDOW_* / RUNNING_SUM 等）は変換しません
+- Tableau sets / groups は 1:1 で変換しません
+- join の on 条件は TWB から完全復元できない場合があり TODO が残ります
+- relationship_type（多対一など）は TWB から推定しにくいので assumed_many_to_one をデフォルトにします
+- 複数テーブル参照の複雑な計算はスコープ解決が難しいため、生成後に Omni 側で調整が必要です
+- セキュリティ（RLS 等）は変換対象外です
+- **⚠️ `aggregate_type` の有効値は `sum`, `count`, `average`, `max`, `median`, `min`, `list`, `count_distinct`, `percentile`, `sum_distinct_on`, `average_distinct_on`, `median_distinct_on`, `percentile_distinct_on` のみ。`number` は無効値（Omniでエラーになる）。`semantic_view_agg` も無効値。** SQLに集計関数（SUM, COUNT, AVG等）を直接含む measure は `aggregate_type` 自体を省略すること（ただしsymmetric aggregation最適化が無効になるトレードオフあり）
+- Topic の joins は**ネスト構造**で間接joinパスを表現します（`join_via` パラメータはtopicには存在しない）。例: view_a経由でview_bにjoin → `joins:\n  view_a:\n    view_b: {}`
+- Tableau LOD計算（{FIXED|INCLUDE|EXCLUDE ...}）はOmniの `level_of_detail` dimension に変換される。ポスト処理でSQL直書きmeasureに変換しないこと
+- **⚠️ Tableau Parameter → Omni filters の制限事項**:
+  - Omniの `filters:` は Tableau Parameter の完全な代替ではない
+  - メトリクス切り替え（表示メジャーの動的切替）はダッシュボードの Control (Field switcher) で実現することを推奨
+  - `allowed_values` / `default` キーはOmniに存在しない → `suggestion_list` / `default_filter` を使用
+  - SQL内のパラメータ参照は Mustache構文 `{{filters.<view>.<filter>.value}}` を使用（`{% parameter %}` は不可）
+  - Mustacheのデフォルト値構文: `{{^filters.view.filter.value}}default{{/filters.view.filter.value}}` でfilter未選択時のフォールバックを指定可能
+- **Chart / Visualization 関連の制限事項**:
+  - Gantt Bar, Polygon, Density マークは Omni にネイティブ対応なし -> Custom Vega-Lite で再現が必要
+  - Tableau の Pages シェルフは Omni に相当機能なし -> ダッシュボード フィルターで代替
+  - Tableau の高度な地理空間機能（カスタムジオコーディング、空間演算等）は Omni Map で完全再現できない場合あり
+  - Tableau のパラメータによるメトリクス切替は Omni の Field Switcher コントロールで対応
+  - Pivot テーブル（Text マーク）は Omni で 200 列が上限
+  - Tableau の Dual Axis は Omni では複数 measure を同一チャートに配置して再現（完全互換ではない）
+  - Tableau Dashboard Actions（フィルター連動、URL アクション等）は Omni のダッシュボード フィルター / クロスフィルターで部分的に再現可能
