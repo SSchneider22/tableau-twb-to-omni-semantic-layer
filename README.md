@@ -1,6 +1,6 @@
 # Tableau TWB -> Omni Semantic Layer + Chart Reproduction Migrator
 
-Tableau の `.twb`（XML workbook）から、Omni の Semantic Layer YAML とチャート再現用 Markdown ガイドを自動生成するツールです。
+Tableau の `.twb`（XML workbook）から、Omni の Semantic Layer YAML とチャート再現用 Markdown ガイドを自動生成する [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill です。
 
 ## Generated Output
 
@@ -12,12 +12,22 @@ Tableau の `.twb`（XML workbook）から、Omni の Semantic Layer YAML とチ
 | `charts/index.md` | 全体概要 + チャートタイプ対応表 + ダッシュボード構成 |
 | `charts/<sheet_name>.md` | シートごとの Omni 再現手順 |
 
-## Prerequisites
+## Claude Code Skill としての使い方
+
+Claude Code 上で `.twb` ファイルを渡して変換を依頼するだけで利用できます。
+
+```
+この .twb ファイルを Omni セマンティックレイヤーに変換してください → /path/to/workbook.twb
+```
+
+Skill が自動的に `.twb` を解析し、Omni の View / Relationship / Topic YAML とチャート再現用 Markdown を生成します。
+
+## Prerequisites（スクリプト直接実行時）
 
 - Python 3.10+
 - lxml / PyYAML
 
-## Usage
+## Usage（スクリプト直接実行）
 
 ```bash
 python -m venv .venv
