@@ -17,7 +17,7 @@ import argparse
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
 from lxml import etree
@@ -212,6 +212,122 @@ def is_aggregated_formula(formula: str) -> bool:
     return any(re.search(rf"\b{fn}\s*\(", f) for fn in ["sum", "avg", "average", "min", "max", "count", "countd"])
 
 
+def try_unwrap_simple_aggregate(formula: str):
+    """単純な AGG([field]) パターンなら (omni_agg_type, inner_expr) を返す。複雑なら None。"""
+    f = (formula or "").strip()
+    m = re.match(r"^([a-zA-Z]+)\s*\(", f)
+    if not m:
+        return None
+    func_name = m.group(1).lower()
+    agg_type = AGG_FUNCS.get(func_name)
+    if not agg_type:
+        return None
+    # 関数の開き括弧に対応する閉じ括弧が式の末尾かチェック
+    open_pos = m.end() - 1  # '(' の位置
+    close_pos = _find_matching_paren(f, open_pos)
+    if close_pos == -1 or close_pos != len(f) - 1:
+        return None
+    # 内部式を取得
+    inner = f[open_pos + 1 : close_pos].strip()
+    # 内部式に集計関数が含まれていないかチェック
+    if is_aggregated_formula(inner):
+        return None
+    return (agg_type, inner)
+
+
+def _find_matching_paren(s: str, start: int) -> int:
+    """start位置の'('に対応する')'の位置を返す。見つからなければ-1。"""
+    if start >= len(s) or s[start] != "(":
+        return -1
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _split_args(s: str) -> List[str]:
+    """括弧のネストを考慮してカンマで引数を分割する。"""
+    args: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    args.append("".join(current).strip())
+    return args
+
+
+def _replace_func_call(sql: str, func_name: str, replacer: Callable[[List[str]], str]) -> str:
+    """func_name(args...)パターンを見つけてreplacerで置換。ネスト対応。大文字小文字無視。"""
+    pattern = re.compile(r"\b" + func_name + r"\s*\(", re.IGNORECASE)
+    result = sql
+    while True:
+        m = pattern.search(result)
+        if not m:
+            break
+        # '(' の位置を特定
+        paren_start = result.index("(", m.start())
+        paren_end = _find_matching_paren(result, paren_start)
+        if paren_end == -1:
+            break
+        inner = result[paren_start + 1:paren_end]
+        args = _split_args(inner)
+        replacement = replacer(args)
+        result = result[:m.start()] + replacement + result[paren_end + 1:]
+    return result
+
+
+def convert_tableau_syntax_to_sql(sql: str) -> str:
+    """Tableau固有関数・構文を標準SQLに変換する。"""
+
+    # 1. ISNULL(expr) → (expr) IS NULL
+    #    ISNULLをIFNULLより先に処理（正規表現でIFNULLにマッチしないよう単語境界を使用）
+    sql = _replace_func_call(sql, "ISNULL", lambda args: f"({args[0]}) IS NULL" if len(args) == 1 else f"ISNULL({', '.join(args)})")
+
+    # 2. IIF(test, then, else [, unknown]) → CASE WHEN test THEN then ELSE else END
+    #    IIFをIFより先に処理（IIFがIFにマッチしないよう）
+    def _iif_replacer(args: List[str]) -> str:
+        if len(args) >= 3:
+            return f"CASE WHEN {args[0]} THEN {args[1]} ELSE {args[2]} END"
+        return f"IIF({', '.join(args)})"
+    sql = _replace_func_call(sql, "IIF", _iif_replacer)
+
+    # 3. IFNULL(a, b) → COALESCE(a, b)
+    sql = _replace_func_call(sql, "IFNULL", lambda args: f"COALESCE({', '.join(args)})")
+
+    # 4. ZN(expr) → COALESCE(expr, 0)
+    sql = _replace_func_call(sql, "ZN", lambda args: f"COALESCE({args[0]}, 0)" if len(args) == 1 else f"ZN({', '.join(args)})")
+
+    # 5. IF expr THEN → CASE WHEN expr THEN / ELSEIF → WHEN
+    #    IIF/IFNULL は既に変換済みなので、残っている IF は Tableau の IF/THEN 構文
+    sql = re.sub(r"\bELSEIF\b", "WHEN", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bIF\b(?=.*\bTHEN\b)", "CASE WHEN", sql, flags=re.IGNORECASE)
+
+    # 6. 単純な関数名/構文置換
+    sql = re.sub(r"\bTODAY\s*\(\s*\)", "CURRENT_DATE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bNOW\s*\(\s*\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
+    sql = _replace_func_call(sql, "LEN", lambda args: f"LENGTH({', '.join(args)})")
+    sql = _replace_func_call(sql, "INT", lambda args: f"CAST({args[0]} AS INTEGER)" if len(args) == 1 else f"INT({', '.join(args)})")
+    sql = _replace_func_call(sql, "FLOAT", lambda args: f"CAST({args[0]} AS FLOAT)" if len(args) == 1 else f"FLOAT({', '.join(args)})")
+    sql = _replace_func_call(sql, "STR", lambda args: f"CAST({args[0]} AS VARCHAR)" if len(args) == 1 else f"STR({', '.join(args)})")
+
+    return sql
+
+
 def tableau_formula_to_omni_sql(
     formula: str,
     view_name: str,
@@ -238,6 +354,9 @@ def tableau_formula_to_omni_sql(
     _field_map = field_name_map or {}
 
     sql = formula or ""
+
+    # Convert Tableau-specific syntax/functions to standard SQL first
+    sql = convert_tableau_syntax_to_sql(sql)
 
     # First, handle [Parameters].[InternalName] pattern (Tableau cross-DS param refs)
     def repl_params_dotted(m):
@@ -381,6 +500,9 @@ def extract_calculated_fields(ds: etree._Element) -> List[Tuple[str, str, Option
         calc = col.find(".//calculation")
         if calc is None:
             continue
+        # Skip parameter columns -- they are handled by extract_parameters_as_filters()
+        if col.get("param-domain-type") is not None:
+            continue
         formula = calc.get("formula") or text_or_none(calc)
         if not formula:
             continue
@@ -523,7 +645,7 @@ def datasource_filter_to_omni(
 
     For relative-date filters:
       first_period=-179, last_period=0, period_type=day
-      -> time_for_duration: [179 days ago, 179 days]
+      -> time_for_duration: [180 days ago, 180 days]
     """
     _field_map = field_name_map or {}
 
@@ -531,7 +653,10 @@ def datasource_filter_to_omni(
         col_key = _field_map.get(filt.column_name, snake(filt.column_name))
         qualified = f"{view_name}.{col_key}"
 
-        duration = abs(filt.first_period or 0)
+        first = filt.first_period or 0
+        last = filt.last_period or 0
+        # +1: Tableau の first_period/last_period は両端包含（例: -179〜0 = 今日含む180日間）
+        duration = last - first + 1
         # Pluralize period type
         period = filt.period_type or "day"
         period_plural = period + "s" if not period.endswith("s") else period
@@ -634,6 +759,7 @@ def main():
     ap.add_argument("--topic-group-label", default=None, help="Optional group_label for all generated topics")
     ap.add_argument("--max-topic-join-depth", type=int, default=4, help="Max depth of joins tree per topic")
     ap.add_argument("--charts-out", default=None, help="Output directory for chart reproduction Markdown files")
+    ap.add_argument("--domain-labels", default=None, help="Path to JSON file with domain labels: {\"worksheets\": {...}, \"dashboards\": {...}}")
     args = ap.parse_args()
 
     ensure_dir(args.out)
@@ -806,14 +932,21 @@ def main():
 
                 if is_aggregated_formula(formula):
                     # measure
-                    agg_type = None
-                    m = re.match(r"^\s*([a-zA-Z]+)\s*\(", (formula or "").strip())
-                    if m:
-                        agg_type = AGG_FUNCS.get(m.group(1).lower())
-
-                    measure_obj = {"label": label, "sql": tableau_formula_to_omni_sql(formula, attach_view, param_captions, param_internal_name_map, field_name_map)}
-                    if agg_type:
-                        measure_obj["aggregate_type"] = agg_type
+                    unwrapped = try_unwrap_simple_aggregate(formula)
+                    if unwrapped:
+                        # 単純集計: AGG([field]) → sql は内部式のみ、aggregate_type を設定
+                        agg_type, inner_expr = unwrapped
+                        measure_obj = {
+                            "label": label,
+                            "sql": tableau_formula_to_omni_sql(inner_expr, attach_view, param_captions, param_internal_name_map, field_name_map),
+                            "aggregate_type": agg_type,
+                        }
+                    else:
+                        # 複雑集計: sql に集計関数を含む → aggregate_type を省略
+                        measure_obj = {
+                            "label": label,
+                            "sql": tableau_formula_to_omni_sql(formula, attach_view, param_captions, param_internal_name_map, field_name_map),
+                        }
                     omni_views[attach_view].measures[fname] = measure_obj
                 else:
                     # dimension
@@ -906,14 +1039,35 @@ def main():
     for t in topics:
         write_yaml(os.path.join(topics_dir, f"{t.name}.topic"), t.to_yaml_obj())
 
+    # LOD参照フィールド警告: Topic fields: 指定時に漏れやすいフィールドを表示
+    for vname, v in omni_views.items():
+        lod_refs: Set[str] = set()
+        for dim_name, dim_def in v.dimensions.items():
+            if not isinstance(dim_def, dict):
+                continue
+            lod = dim_def.get("level_of_detail")
+            if not isinstance(lod, dict):
+                continue
+            for lod_key in ("fixed", "always_include", "always_exclude"):
+                for ref in (lod.get(lod_key) or []):
+                    lod_refs.add(f"{vname}.{ref}")
+        if lod_refs:
+            print(f"  [!] {vname}: LOD参照フィールド（Topic fields:指定時に必ず含めること）: {sorted(lod_refs)}")
+
     print("Done.")
     print(f"- Views: {len(omni_views)} -> {views_dir}")
     print(f"- Relationships: {len(all_relationships)} -> {os.path.join(args.out, 'relationships.yml')}")
     print(f"- Topics (per datasource): {len(topics)} -> {topics_dir}")
 
     # Chart reproduction Markdown generation
-    if args.charts_out:
+    twb_stem = os.path.splitext(os.path.basename(args.twb))[0]
+    charts_out = args.charts_out
+    # Auto-compute output dir when --domain-labels is given but --charts-out is not
+    if not charts_out and args.domain_labels:
+        charts_out = os.path.join("migration-guides-twb2omni", twb_stem)
+    if charts_out:
         import sys
+        import json as _json
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
@@ -922,8 +1076,17 @@ def main():
 
         worksheets = extract_worksheets(root)
         dashboards = extract_dashboards(root)
-        generate_chart_markdowns(worksheets, dashboards, args.charts_out, global_field_name_map)
-        print(f"- Charts Markdown: {len(worksheets)} sheets -> {args.charts_out}")
+
+        domain_labels = None
+        if args.domain_labels:
+            with open(args.domain_labels, "r", encoding="utf-8") as dl_f:
+                domain_labels = _json.load(dl_f)
+
+        generate_chart_markdowns(
+            worksheets, dashboards, charts_out, global_field_name_map,
+            domain_labels=domain_labels, twb_filename=twb_stem,
+        )
+        print(f"- Charts Markdown: {len(worksheets)} sheets + {len(dashboards)} dashboards -> {charts_out}")
 
     print("")
     print("IMPORTANT NEXT STEPS:")

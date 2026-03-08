@@ -58,8 +58,26 @@ join_type 有効値: `always_left`(デフォルト), `inner`, `full_outer`, `cro
 label: Orders DS
 group_label: Tableau Migrated
 base_view: ecomm__orders
+fields:                              # 省略すると全フィールドが公開される
+  [                                  # 明示する場合は join した各 view の全フィールドを含めること
+    ecomm__orders.order_id,          # LOD の fixed キーや join キーが欠落すると sync エラーになる
+    ecomm__users.id,
+  ]
 joins:
   ecomm__users: {}
+
+## default_filters（time_for_duration） — Tableau データソースフィルターの変換先
+
+Tableau の `<filter class="relative-date">` （データソースフィルター）は Topic の `default_filters` に変換する。`time_for_duration` を使用し、値は必ず **2要素リスト** `[開始, 期間]` で指定する。
+
+```yaml
+# Topic ファイル内
+default_filters:
+  ecomm__orders.created_at:
+    time_for_duration: ["180 days ago", "180 days"]
+  ecomm__orders.shipped_at:
+    time_for_duration: ["30 days ago", "30 days"]
+```
 
 ## aggregate_type
 
@@ -94,7 +112,14 @@ joins:
   direct_view_c: {}           # base_viewから直接join
 ```
 
-**注意**: `join_via_map` はquery_views専用パラメータであり、topicでは使用不可。
+**topic joins で使用不可なキー**:
+- `join_from_field` — relationships.yml 専用
+- `join_to_field` — relationships.yml 専用
+- `join_via` — topic には存在しない（ネスト構造で表現）
+- `join_via_map` — query_views 専用パラメータ
+- `on_sql` — relationships.yml 専用
+
+topic joins 内の全値は dict（マップ）でなければならない。文字列値が含まれると sync エラーになる。
 
 ## LOD（level_of_detail）例
 
@@ -144,7 +169,7 @@ sample_queries:
       sorts:
         - field: view_name.field1
       limit: 100
-      topic: グループラベル名    # ← group_label の値を使用（ファイル名やbase_viewではない）
+      topic: topic_name          # ← トピック名（.topic.yaml のファイル名プレフィックス）を使用
     description: クエリの説明
     prompt: ユーザーが聞く質問例
     hidden: false                  # trueにするとUIから非表示（AI用途のみ等）

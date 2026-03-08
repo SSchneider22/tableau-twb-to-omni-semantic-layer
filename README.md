@@ -2,6 +2,8 @@
 
 Tableau の `.twb`（XML workbook）から、Omni の Semantic Layer YAML とチャート再現用 Markdown ガイドを自動生成する [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill です。
 
+※全ての`.twb`ファイルを完璧にOmniのSemantic Layerに変換することを保証するSkillではないため、ご利用時はご注意ください。
+
 ## Generated Output
 
 | Output | Description |
@@ -9,8 +11,9 @@ Tableau の `.twb`（XML workbook）から、Omni の Semantic Layer YAML とチ
 | `views/*.yaml` | Omni View 定義 |
 | `relationships.yml` | View 間の join 定義 |
 | `topics/*.topic` | Tableau Datasource ごとに 1 つの Topic |
-| `charts/index.md` | 全体概要 + チャートタイプ対応表 + ダッシュボード構成 |
-| `charts/<sheet_name>.md` | シートごとの Omni 再現手順 |
+| `migration-guides-twb2omni/<twb>/index.md` | 全体概要 + チャートタイプ対応表 + ダッシュボード構成 |
+| `migration-guides-twb2omni/<twb>/worksheet_<name>_<domain>.md` | シートごとの Omni 再現手順 |
+| `migration-guides-twb2omni/<twb>/dashboard_<name>_<domain>.md` | ダッシュボードごとの構成・再現方針 |
 
 ## Claude Code Skill としての使い方
 
@@ -37,7 +40,8 @@ pip install -r scripts/requirements.txt
 python scripts/twb_to_omni.py \
   --twb path/to/workbook.twb \
   --out omni_model_out \
-  --charts-out omni_model_out/charts \
+  --charts-out migration-guides-twb2omni/workbook \
+  --domain-labels domain_labels.json \
   --default-schema PUBLIC \
   --topic-group-label "Tableau Migrated"
 ```
@@ -48,7 +52,8 @@ python scripts/twb_to_omni.py \
 |---|---|---|
 | `--twb` | Path to Tableau .twb file | (required) |
 | `--out` | Output directory for YAML | (required) |
-| `--charts-out` | Output directory for chart Markdown files | (optional) |
+| `--charts-out` | Output directory for chart Markdown files | `migration-guides-twb2omni/<twb>/` (auto when `--domain-labels` specified) |
+| `--domain-labels` | Path to JSON with domain labels (`{"worksheets": {...}, "dashboards": {...}}`) | (optional) |
 | `--default-schema` | Schema name when TWB omits it | `PUBLIC` |
 | `--topic-group-label` | `group_label` for all generated topics | (none) |
 | `--max-topic-join-depth` | Max depth of joins tree per topic | `4` |
@@ -65,21 +70,32 @@ python scripts/twb_to_omni.py \
 
 ### Chart Reproduction Markdown
 
-- `charts/index.md` のチャートタイプ対応が正しいか
+- `index.md` のチャートタイプ対応が正しいか
 - 各シート Markdown のフィールドマッピングが Omni フィールド名と一致しているか
 - Custom Vega-Lite が必要なチャートを特定し、対応方針を決めたか
 - ダッシュボード構成（含まれるシート）が正しいか
+- ドメインラベル（ファイル名の日本語部分）が各シート/ダッシュボードの内容を適切に表しているか
 
 ## Post-Processing Rules
 
+### 禁止パターン（Omni sync エラー）
+
+- **`dimensions:` ブロックの重複禁止** - view ファイルに `dimensions:` は 1 つだけ。LOD 追加時は既存ブロックにマージする
 - **`aggregate_type: number` は使わない** - `number` は Omni の無効値。sql に集計関数を直接含む measure は `aggregate_type` 自体を省略する
-- **Topic joins に `join_via` は存在しない** - 間接 join は必ずネスト構造で表現する
+- **Topic joins に `join_from_field` / `join_to_field` / `on_sql` / `join_via` は不可** - topic joins はビュー名のネストマップのみ（これらは `relationships.yml` 専用）
+
+### 基本ルール
+
 - **Topic joins のネストは直接 relationship 経路に従う**
 - **`sample_queries` の `topic:` は `group_label`（日本語 Topic 名）を使用する**
 - **Tableau LOD 計算 -> Omni `level_of_detail` dimension** - 必ず `dimensions` セクションに配置する
 - **`allowed_values` / `default` は使用不可** - `suggestion_list` / `default_filter` を使用する
 - **パラメータ参照は Mustache 構文**: `{{filters.<view>.<filter>.value}}`
 - **Tableau データソースフィルター（相対日付）-> Omni `default_filters`**: `time_for_duration` に変換
+
+### Validation
+
+ポスト処理後に必ず実行: `python scripts/validate_omni_yaml.py --dir <output_directory>`
 
 ## References
 

@@ -1,13 +1,14 @@
 # Limitations（制限事項）
 
+- **Tableau固有構文→標準SQL自動変換対応範囲**: `IF/ELSEIF/THEN/ELSE/END` → `CASE WHEN`, `ISNULL()` → `IS NULL`, `IIF()` → `CASE WHEN`, `IFNULL()` → `COALESCE()`, `ZN()` → `COALESCE(,0)`, `TODAY()` → `CURRENT_DATE`, `NOW()` → `CURRENT_TIMESTAMP`, `LEN()` → `LENGTH()`, `INT()/FLOAT()/STR()` → `CAST()`。これら以外のTableau固有関数は手動変換が必要
 - Tableau table calculations（WINDOW_* / RUNNING_SUM 等）は変換しません
 - Tableau sets / groups は 1:1 で変換しません
 - join の on 条件は TWB から完全復元できない場合があり TODO が残ります
 - relationship_type（多対一など）は TWB から推定しにくいので assumed_many_to_one をデフォルトにします
 - 複数テーブル参照の複雑な計算はスコープ解決が難しいため、生成後に Omni 側で調整が必要です
 - セキュリティ（RLS 等）は変換対象外です
-- **⚠️ `aggregate_type` の有効値は `sum`, `count`, `average`, `max`, `median`, `min`, `list`, `count_distinct`, `percentile`, `sum_distinct_on`, `average_distinct_on`, `median_distinct_on`, `percentile_distinct_on` のみ。`number` は無効値（Omniでエラーになる）。`semantic_view_agg` も無効値。** SQLに集計関数（SUM, COUNT, AVG等）を直接含む measure は `aggregate_type` 自体を省略すること（ただしsymmetric aggregation最適化が無効になるトレードオフあり）
-- Topic の joins は**ネスト構造**で間接joinパスを表現します（`join_via` パラメータはtopicには存在しない）。例: view_a経由でview_bにjoin → `joins:\n  view_a:\n    view_b: {}`
+- **⚠️ `aggregate_type` の有効値は `sum`, `count`, `average`, `max`, `median`, `min`, `list`, `count_distinct`, `percentile`, `sum_distinct_on`, `average_distinct_on`, `median_distinct_on`, `percentile_distinct_on` のみ。`number` は無効値（Omniでエラーになる）。`semantic_view_agg` も無効値。** `number` は `filters:` の `type` としては有効だが `aggregate_type` としては無効であり、混同しやすいので注意。SQLに集計関数（SUM, COUNT, AVG等）を直接含む measure は `aggregate_type` 自体を省略すること（ただしsymmetric aggregation最適化が無効になるトレードオフあり）
+- **⚠️ Topic の joins はネスト構造のみ**: 間接joinパスを表現します（`join_via` パラメータはtopicには存在しない）。例: view_a経由でview_bにjoin → `joins:\n  view_a:\n    view_b: {}`。**`join_from_field` / `join_to_field` / `on_sql` は topic joins では使用不可**（これらは `relationships.yml` 専用キー）。topic joins 内の全値は dict でなければならない
 - Tableau LOD計算（{FIXED|INCLUDE|EXCLUDE ...}）はOmniの `level_of_detail` dimension に変換される。ポスト処理でSQL直書きmeasureに変換しないこと
 - **⚠️ Tableau Parameter → Omni filters の制限事項**:
   - Omniの `filters:` は Tableau Parameter の完全な代替ではない
