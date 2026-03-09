@@ -121,6 +121,12 @@ joins:
 
 topic joins 内の全値は dict（マップ）でなければならない。文字列値が含まれると sync エラーになる。
 
+**`joins` と `relationships` の違い**:
+- **Topic `joins`**: ビュー名のネストマップ。join パスの構造のみを定義する（`on_sql` や `type` は含めない）。省略可
+- **`relationships.yml`**: リスト形式の join 定義。`join_from_view`, `join_to_view`, `on_sql`, `relationship_type` 等の詳細を記述する
+
+Topic の `joins` にリスト形式（`- join: view_name`）を使用すると `Property joins must be a map` エラーになる。
+
 ## LOD（level_of_detail）例
 
 **重要**: LODフィールドは必ず `dimensions` セクションに配置する（measuresではない）。`sql` には集計関数を含めず、集計は `level_of_detail.aggregate_type` で指定する。

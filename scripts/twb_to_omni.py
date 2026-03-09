@@ -377,6 +377,12 @@ def tableau_formula_to_omni_sql(
 
     sql = re.sub(r"\[([^\]]+)\]", repl, sql)
     sql = re.sub(r"\bCOUNTD\s*\(", "count(distinct ", sql, flags=re.IGNORECASE)
+
+    # Convert Tableau double-quoted string literals to SQL single quotes.
+    # At this point, [Field] refs are already ${...} / {{...}}, so remaining
+    # "..." are string literals from Tableau formulas.
+    sql = re.sub(r'"([^"]*)"', r"'\1'", sql)
+
     return sql
 
 

@@ -148,6 +148,27 @@ joins:
     view_b: {}
 ```
 
+#### エラー3b: Topic `joins` がリスト形式になっている
+Topic の `joins:` はマップ（ネスト構造）でなければならない。リスト形式（`- join: view_name`）で記述すると `Property joins must be a map` エラーになる。join の詳細（`on_sql`, `type`, `relationship_type`）はトピックの `joins` ではなく `relationships.yml` に記載するもの。Topicでは joins の定義を省略しても問題ない。
+
+```yaml
+# BAD - リスト形式 → "Property joins must be a map" エラー
+joins:
+  - join: view_a
+    type: left
+    on_sql: ...
+    relationship_type: many_to_one
+
+# GOOD - ネストマップ形式
+joins:
+  view_a: {}
+  view_b:
+    view_c: {}
+
+# GOOD - joins を省略（定義不要の場合）
+# joins: は記述しない
+```
+
 #### エラー4: dimension に直接 `aggregate_type` を記述
 `aggregate_type` は `measures` または `level_of_detail` ブロック内でのみ有効。dimension 直下に書くと sync エラーになる。LOD フィールドの場合は `level_of_detail.aggregate_type` にネストすること。
 
@@ -219,6 +240,24 @@ default_filters:
     time_for_duration: ["180 days ago", "180 days"]
 ```
 
+#### エラー8: SQL文字列リテラルにダブルクォート使用
+Tableau はダブルクォート `"受注"` で文字列を表現するが、SQL/Omni ではダブルクォートはカラム識別子を意味する。
+文字列リテラルはシングルクォート `'受注'` を使うこと。
+
+```yaml
+# BAD - ダブルクォートはカラム識別子として解釈される
+measures:
+  order_status_count:
+    sql: |-
+      CASE WHEN ${view.status} = "受注" THEN 1 ELSE 0 END
+
+# GOOD - 文字列リテラルはシングルクォート
+measures:
+  order_status_count:
+    sql: |-
+      CASE WHEN ${view.status} = '受注' THEN 1 ELSE 0 END
+```
+
 ### 基本ルール
 
 - **`aggregate_type: number` は絶対に使わない**: `number`はOmniの無効値。sqlに集計関数（SUM, COUNT, AVG等）を直接含むmeasureは `aggregate_type` 自体を省略する
@@ -259,6 +298,7 @@ default_filters:
 - **Tableau データソースフィルター → Topic `default_filters`**: TWB の `<filter class="relative-date">` を Topic の `default_filters` に `time_for_duration` 形式で変換すること。Topic に `default_filters` がないとデータソースフィルターが適用されない
 - **Topic `fields:` リストには join した dim view の全フィールドを含める**: dim view のフィールドを Tableau で使用したものだけに絞ると、LOD の `fixed` キーや join キーなど内部参照フィールドが欠落し sync エラーになる。`fields:` を省略すれば全フィールドが公開されるが、明示的に指定する場合は join した各 view の全フィールドを含めること
 - **パラメータは filter のみに出力する**: パラメータを dimension や measure に変換してはならない。パラメータは常に `filters:` セクションのみに配置する
+- **SQL文字列リテラルはシングルクォート**: Tableau はダブルクォート `"受注"` で文字列を表現するが、SQL/Omni ではダブルクォートはカラム識別子。計算フィールドの文字列リテラルは必ずシングルクォート `'受注'` を使う
 - **データソースフィルター期間は両端包含（+1）、手動変更禁止**: スクリプトが出力した `time_for_duration` の日数を手動で変更しない。両端包含で `last - first + 1` が正しい計算
 
 ### Validation

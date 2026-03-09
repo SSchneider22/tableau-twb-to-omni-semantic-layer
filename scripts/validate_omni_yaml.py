@@ -101,7 +101,15 @@ def check_topic_joins(file_path: Path) -> list[str]:
         return errors
 
     joins = data.get("joins")
-    if joins is None or not isinstance(joins, dict):
+    if joins is None:
+        return errors
+    if not isinstance(joins, dict):
+        errors.append(
+            f"{file_path}: 'joins' must be a map (got {type(joins).__name__}). "
+            f"Use nested view map structure, not a list. "
+            f"If join details (on_sql, type, relationship_type) are needed, "
+            f"use 'relationships' parameter instead of 'joins'"
+        )
         return errors
 
     def _check_joins(obj: dict, path: str = "joins") -> None:
@@ -258,6 +266,54 @@ def check_topic_lod_field_coverage(
     return errors
 
 
+def check_sql_double_quoted_literals(file_path: Path) -> list[str]:
+    """計算フィールドの SQL 内にダブルクォート文字列リテラルが残っていないか検出する.
+
+    Tableau はダブルクォートで文字列リテラルを表現するが、SQL/Omni では
+    ダブルクォートはカラム識別子を意味する。計算フィールド（${...} を含む sql）
+    内の "..." は文字列リテラルの可能性が高く、シングルクォートにすべき。
+    """
+    errors = []
+    text = file_path.read_text(encoding="utf-8")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return errors
+    if not isinstance(data, dict):
+        return errors
+
+    # Pattern to find double-quoted strings that look like string literals
+    # (not column identifiers like "COLUMN_NAME" which are all-caps/underscored)
+    dq_pattern = re.compile(r'"([^"]+)"')
+    col_id_pattern = re.compile(r'^[A-Z_][A-Z0-9_]*$')
+
+    for section_name in ("dimensions", "measures"):
+        section = data.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for field_name, field_def in section.items():
+            if not isinstance(field_def, dict):
+                continue
+            sql_val = field_def.get("sql")
+            if not isinstance(sql_val, str):
+                continue
+            # Only check calculated fields (those referencing other fields)
+            if "${" not in sql_val and "{{" not in sql_val:
+                continue
+            for m in dq_pattern.finditer(sql_val):
+                inner = m.group(1)
+                # Skip column identifiers (ALL_CAPS_UNDERSCORE)
+                if col_id_pattern.match(inner):
+                    continue
+                errors.append(
+                    f"{file_path}: {section_name}.{field_name} の sql に"
+                    f"ダブルクォート文字列 \"{inner}\" があります"
+                    f"（シングルクォート '{inner}' にすべき）"
+                )
+
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate generated Omni YAML files"
@@ -281,6 +337,7 @@ def main() -> int:
             all_errors.extend(check_duplicate_top_level_keys(f))
             all_errors.extend(check_aggregate_types(f))
             all_errors.extend(check_aggregate_type_on_dimensions(f))
+            all_errors.extend(check_sql_double_quoted_literals(f))
 
     # topics/*.topic
     topics_dir = base / "topics"
