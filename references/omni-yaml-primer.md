@@ -66,17 +66,52 @@ fields:                              # 省略すると全フィールドが公�
 joins:
   ecomm__users: {}
 
-## default_filters（time_for_duration） — Tableau データソースフィルターの変換先
+## always_where_sql — Tableau データソースフィルターの変換先
 
-Tableau の `<filter class="relative-date">` （データソースフィルター）は Topic の `default_filters` に変換する。`time_for_duration` を使用し、値は必ず **2要素リスト** `[開始, 期間]` で指定する。
+Tableau の `<filter class="relative-date">` （データソースフィルター）は Topic の `always_where_sql` に変換する。SQL 式で常時適用フィルターを指定する。
 
 ```yaml
 # Topic ファイル内
-default_filters:
-  ecomm__orders.created_at:
-    time_for_duration: ["180 days ago", "180 days"]
-  ecomm__orders.shipped_at:
-    time_for_duration: ["30 days ago", "30 days"]
+always_where_sql: ${ecomm__orders.created_at} >= DATEADD('day', -180, CURRENT_DATE())
+```
+
+複数フィルターがある場合は `AND` で結合される:
+```yaml
+always_where_sql: ${ecomm__orders.created_at} >= DATEADD('day', -180, CURRENT_DATE()) AND ${ecomm__orders.shipped_at} >= DATEADD('day', -30, CURRENT_DATE())
+```
+
+## groups — Tableau グループの変換先
+
+Tableau のグループ化機能は dimension の `groups` 構文に変換する。
+
+```yaml
+dimensions:
+  payment_method_groups:
+    sql: ${view_name.payment_method}
+    groups:
+      - filter:
+          is: [ クレジットカード, 電子マネー ]
+        name: 電子決済
+      - filter:
+          is: [ コンビニ払い, 代引き, 銀行振込 ]
+        name: 通常決済
+    else: Other
+    label: Payment Method Groups
+```
+
+## group_label + drill_fields — Tableau 階層の変換先
+
+Tableau の階層（drill-path）は `group_label` と `drill_fields` で再現する。同じ `group_label` を持つフィールドがグループとして表示され、`drill_fields` でドリルダウン先を指定する。
+
+```yaml
+dimensions:
+  category:
+    sql: '"CATEGORY"'
+    drill_fields: [ subcategory ]
+    group_label: Category_Group
+  subcategory:
+    sql: '"SUBCATEGORY"'
+    group_label: Category_Group
 ```
 
 ## aggregate_type

@@ -158,8 +158,7 @@ class OmniTopic:
     group_label: Optional[str] = None
     base_view: Optional[str] = None
     joins: dict = field(default_factory=dict)
-    default_filters: dict = field(default_factory=dict)
-    always_where_filters: dict = field(default_factory=dict)
+    always_where_sql: Optional[str] = None
 
     def to_yaml_obj(self) -> dict:
         obj: Dict[str, object] = {}
@@ -171,10 +170,8 @@ class OmniTopic:
             obj["base_view"] = self.base_view
         if self.joins:
             obj["joins"] = self.joins
-        if self.default_filters:
-            obj["default_filters"] = self.default_filters
-        if self.always_where_filters:
-            obj["always_where_filters"] = self.always_where_filters
+        if self.always_where_sql:
+            obj["always_where_sql"] = self.always_where_sql
         return obj
 
 
@@ -509,6 +506,9 @@ def extract_calculated_fields(ds: etree._Element) -> List[Tuple[str, str, Option
         # Skip parameter columns -- they are handled by extract_parameters_as_filters()
         if col.get("param-domain-type") is not None:
             continue
+        # Skip group columns -- they are handled by extract_groups()
+        if col.find(".//group") is not None:
+            continue
         formula = calc.get("formula") or text_or_none(calc)
         if not formula:
             continue
@@ -644,34 +644,149 @@ def datasource_filter_to_omni(
     filt: DatasourceFilter,
     view_name: str,
     field_name_map: Optional[Dict[str, str]] = None,
-) -> Optional[Tuple[str, dict]]:
+) -> Optional[str]:
     """
-    Convert a DatasourceFilter to an Omni default_filter entry.
-    Returns (fully_qualified_field, filter_value_dict) or None if not convertible.
+    Convert a DatasourceFilter to an always_where_sql clause string.
+    Returns a SQL expression string or None if not convertible.
 
     For relative-date filters:
       first_period=-179, last_period=0, period_type=day
-      -> time_for_duration: [180 days ago, 180 days]
+      -> ${view.field} >= DATEADD('day', -180, CURRENT_DATE())
     """
     _field_map = field_name_map or {}
 
     if filt.filter_type == "relative-date":
         col_key = _field_map.get(filt.column_name, snake(filt.column_name))
-        qualified = f"{view_name}.{col_key}"
+        qualified = f"${{{view_name}.{col_key}}}"
 
         first = filt.first_period or 0
         last = filt.last_period or 0
         # +1: Tableau の first_period/last_period は両端包含（例: -179〜0 = 今日含む180日間）
         duration = last - first + 1
-        # Pluralize period type
         period = filt.period_type or "day"
-        period_plural = period + "s" if not period.endswith("s") else period
 
-        time_for_duration = [f"{duration} {period_plural} ago", f"{duration} {period_plural}"]
-
-        return (qualified, {"time_for_duration": time_for_duration})
+        return f"{qualified} >= DATEADD('{period}', -{duration}, CURRENT_DATE())"
 
     return None
+
+
+@dataclass
+class TableauGroup:
+    """Represents a Tableau group definition for Omni groups conversion."""
+    caption: str           # Display name of the group column
+    internal_name: str     # Tableau internal name e.g. "[Group 1]"
+    base_field: str        # The field being grouped (from level= attribute)
+    buckets: List[Tuple[str, List[str]]]  # [(group_name, [member_values])]
+
+
+def extract_groups(ds: etree._Element) -> List[TableauGroup]:
+    """
+    Extract group definitions from <column> elements containing <group>.
+    Tableau groups use <groupfilter function="union"> for each bucket
+    and <groupfilter function="member"> for individual members.
+    """
+    out: List[TableauGroup] = []
+    for col in ds.findall(".//column"):
+        grp_elem = col.find(".//group")
+        if grp_elem is None:
+            continue
+        caption = col.get("caption") or col.get("name") or "group"
+        internal_name = (col.get("name") or "").strip("[]") or "group"
+
+        base_field: Optional[str] = None
+        buckets: List[Tuple[str, List[str]]] = []
+
+        for union_filter in grp_elem.findall("groupfilter[@function='union']"):
+            members: List[str] = []
+            for member_filter in union_filter.findall("groupfilter[@function='member']"):
+                member_val = member_filter.get("member")
+                if member_val:
+                    members.append(member_val)
+                if base_field is None:
+                    level = member_filter.get("level") or ""
+                    level = level.strip("[]")
+                    if level:
+                        base_field = level
+            if members:
+                # Group name: use user:ui-marker or concatenate first member
+                group_name = union_filter.get("user:ui-marker") or members[0]
+                buckets.append((group_name, members))
+
+        if not base_field or not buckets:
+            continue
+
+        out.append(TableauGroup(
+            caption=caption,
+            internal_name=internal_name,
+            base_field=base_field,
+            buckets=buckets,
+        ))
+    return out
+
+
+def group_to_omni_dimension(
+    group: TableauGroup,
+    view_name: str,
+    field_name_map: Optional[Dict[str, str]] = None,
+) -> dict:
+    """Convert a TableauGroup to an Omni dimension dict with groups syntax."""
+    _field_map = field_name_map or {}
+    base_key = _field_map.get(group.base_field, snake(group.base_field))
+    omni_groups: List[dict] = []
+    for group_name, members in group.buckets:
+        omni_groups.append({
+            "filter": {"is": members},
+            "name": group_name,
+        })
+    return {
+        "sql": f"${{{view_name}.{base_key}}}",
+        "groups": omni_groups,
+        "else": "Other",
+        "label": group.caption,
+    }
+
+
+@dataclass
+class TableauHierarchy:
+    """Represents a Tableau drill-path hierarchy."""
+    name: str              # Hierarchy name
+    fields: List[str]      # Ordered list of raw field names (top → bottom)
+
+
+def extract_hierarchies(ds: etree._Element) -> List[TableauHierarchy]:
+    """Extract drill-path hierarchies from a datasource."""
+    out: List[TableauHierarchy] = []
+    for dp in ds.findall(".//drill-path"):
+        name = dp.get("name") or "hierarchy"
+        fields: List[str] = []
+        for f in dp.findall("field"):
+            raw = (f.text or "").strip().strip("[]")
+            if raw:
+                fields.append(raw)
+        if len(fields) >= 2:
+            out.append(TableauHierarchy(name=name, fields=fields))
+    return out
+
+
+def apply_hierarchies_to_dimensions(
+    view: "OmniView",
+    hierarchies: List[TableauHierarchy],
+    field_name_map: Dict[str, str],
+) -> None:
+    """Add group_label and drill_fields to dimensions based on hierarchies."""
+    for hier in hierarchies:
+        group_label = hier.name.replace(" ", "_")
+        for i, raw_field in enumerate(hier.fields):
+            key = field_name_map.get(raw_field, snake(raw_field))
+            # Create minimal dimension if not already present
+            if key not in view.dimensions:
+                view.dimensions[key] = {"sql": f'"{raw_field}"'}
+            view.dimensions[key]["group_label"] = group_label
+            # Add drill_fields pointing to next level (except last)
+            if i < len(hier.fields) - 1:
+                next_raw = hier.fields[i + 1]
+                next_key = field_name_map.get(next_raw, snake(next_raw))
+                view.dimensions[key]["drill_fields"] = [next_key]
 
 
 def extract_joins_best_effort(ds: etree._Element) -> List[Tuple[str, str, str, Optional[str]]]:
@@ -881,6 +996,15 @@ def main():
             field_name_map[cap] = key
             calc_key_list.append(key)
 
+        # Assign keys for group fields
+        groups_list = extract_groups(ds) if (attach_view and attach_view in omni_views) else []
+        group_key_list: List[str] = []
+        for grp in groups_list:
+            key = make_field_key(grp.caption, grp.internal_name, used_field_keys)
+            used_field_keys.add(key)
+            field_name_map[grp.caption] = key
+            group_key_list.append(key)
+
         # Build mapping from internal param name to ASCII field key for
         # [Parameters].[InternalName] references in Tableau formulas
         param_internal_name_map: Dict[str, str] = {}
@@ -972,6 +1096,16 @@ def main():
                     filter_obj["default_filter"] = {"is": pinfo.default_value}
                 omni_views[attach_view].filters[pname] = filter_obj
 
+            # 4b) Tableau Groups -> Omni groups dimensions
+            for grp_idx, grp in enumerate(groups_list):
+                gkey = group_key_list[grp_idx]
+                dim_def = group_to_omni_dimension(grp, attach_view, field_name_map)
+                omni_views[attach_view].dimensions[gkey] = dim_def
+
+            # 4c) Tableau Hierarchies -> Omni group_label + drill_fields
+            hierarchies = extract_hierarchies(ds)
+            apply_hierarchies_to_dimensions(omni_views[attach_view], hierarchies, field_name_map)
+
         # 5) Joins -> relationships.yml (best effort)
         for left, right, join_type, on_sql in extract_joins_best_effort(ds):
             ls, lt = (None, left)
@@ -1022,14 +1156,16 @@ def main():
                 max_depth=args.max_topic_join_depth,
             )
 
-        # 6) Datasource filters -> topic default_filters
+        # 6) Datasource filters -> topic always_where_sql
         ds_filters = extract_datasource_filters(ds)
+        where_clauses: List[str] = []
         for ds_filt in ds_filters:
             if attach_view:
-                result = datasource_filter_to_omni(ds_filt, attach_view, field_name_map)
-                if result:
-                    qualified_field, filter_value = result
-                    t.default_filters[qualified_field] = filter_value
+                clause = datasource_filter_to_omni(ds_filt, attach_view, field_name_map)
+                if clause:
+                    where_clauses.append(clause)
+        if where_clauses:
+            t.always_where_sql = " AND ".join(where_clauses)
 
         # Merge field_name_map into global map for chart generation
         global_field_name_map.update(field_name_map)

@@ -174,8 +174,8 @@ def check_aggregate_type_on_dimensions(file_path: Path) -> list[str]:
     return errors
 
 
-def check_time_for_duration(file_path: Path) -> list[str]:
-    """topic の default_filters 内で time_for_duration が2要素リストでない場合を検出する."""
+def check_always_where_sql(file_path: Path) -> list[str]:
+    """topic の always_where_sql が文字列であることを検証する."""
     errors = []
     text = file_path.read_text(encoding="utf-8")
     try:
@@ -185,22 +185,63 @@ def check_time_for_duration(file_path: Path) -> list[str]:
     if not isinstance(data, dict):
         return errors
 
-    default_filters = data.get("default_filters")
-    if not isinstance(default_filters, dict):
+    aws = data.get("always_where_sql")
+    if aws is None:
         return errors
 
-    for filter_name, filter_def in default_filters.items():
-        if not isinstance(filter_def, dict):
+    if not isinstance(aws, str):
+        errors.append(
+            f"{file_path}: always_where_sql must be a string, "
+            f"got: {type(aws).__name__}"
+        )
+
+    return errors
+
+
+def check_groups_syntax(file_path: Path) -> list[str]:
+    """view の dimensions 内で groups が正しいリスト形式かを検証する."""
+    errors = []
+    text = file_path.read_text(encoding="utf-8")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return errors
+    if not isinstance(data, dict):
+        return errors
+
+    dims = data.get("dimensions")
+    if not isinstance(dims, dict):
+        return errors
+
+    for field_name, field_def in dims.items():
+        if not isinstance(field_def, dict):
             continue
-        tfd = filter_def.get("time_for_duration")
-        if tfd is None:
+        groups = field_def.get("groups")
+        if groups is None:
             continue
-        if not isinstance(tfd, list) or len(tfd) != 2:
+        if not isinstance(groups, list):
             errors.append(
-                f"{file_path}: default_filters.{filter_name}."
-                f"time_for_duration must be a 2-element list "
-                f"[start, duration], got: {tfd!r}"
+                f"{file_path}: dimensions.{field_name}.groups "
+                f"must be a list, got: {type(groups).__name__}"
             )
+            continue
+        for i, entry in enumerate(groups):
+            if not isinstance(entry, dict):
+                errors.append(
+                    f"{file_path}: dimensions.{field_name}.groups[{i}] "
+                    f"must be a dict"
+                )
+                continue
+            if "filter" not in entry:
+                errors.append(
+                    f"{file_path}: dimensions.{field_name}.groups[{i}] "
+                    f"missing 'filter' key"
+                )
+            if "name" not in entry:
+                errors.append(
+                    f"{file_path}: dimensions.{field_name}.groups[{i}] "
+                    f"missing 'name' key"
+                )
 
     return errors
 
@@ -338,13 +379,14 @@ def main() -> int:
             all_errors.extend(check_aggregate_types(f))
             all_errors.extend(check_aggregate_type_on_dimensions(f))
             all_errors.extend(check_sql_double_quoted_literals(f))
+            all_errors.extend(check_groups_syntax(f))
 
     # topics/*.topic
     topics_dir = base / "topics"
     if topics_dir.is_dir():
         for f in sorted(topics_dir.glob("*.topic")):
             all_errors.extend(check_topic_joins(f))
-            all_errors.extend(check_time_for_duration(f))
+            all_errors.extend(check_always_where_sql(f))
             if views_dir.is_dir():
                 all_errors.extend(check_topic_lod_field_coverage(f, views_dir))
 
