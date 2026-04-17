@@ -2,7 +2,8 @@
 
 - **Tableau固有構文→標準SQL自動変換対応範囲**: `IF/ELSEIF/THEN/ELSE/END` → `CASE WHEN`, `ISNULL()` → `IS NULL`, `IIF()` → `CASE WHEN`, `IFNULL()` → `COALESCE()`, `ZN()` → `COALESCE(,0)`, `TODAY()` → `CURRENT_DATE`, `NOW()` → `CURRENT_TIMESTAMP`, `LEN()` → `LENGTH()`, `INT()/FLOAT()/STR()` → `CAST()`。これら以外のTableau固有関数は手動変換が必要
 - Tableau table calculations（WINDOW_* / RUNNING_SUM 等）は変換しません
-- Tableau sets / groups は 1:1 で変換しません
+- Tableau sets は 1:1 で変換しません（groups は Omni `groups` dimension として対応済み）
+- Tableau 階層（drill-path）は `group_label` + `drill_fields` で再現（対応済み）
 - join の on 条件は TWB から完全復元できない場合があり TODO が残ります
 - relationship_type（多対一など）は TWB から推定しにくいので assumed_many_to_one をデフォルトにします
 - 複数テーブル参照の複雑な計算はスコープ解決が難しいため、生成後に Omni 側で調整が必要です

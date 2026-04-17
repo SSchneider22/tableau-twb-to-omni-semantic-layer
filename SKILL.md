@@ -190,28 +190,7 @@ dimensions:
       fixed: [store_key]
 ```
 
-#### エラー5: `time_for_duration` の形式不正
-`time_for_duration` は必ず要素2つのリスト `[開始, 期間]` で指定する。スカラー値や要素1つ/3つ以上はエラー。
-
-```yaml
-# BAD - スカラー値
-default_filters:
-  orders.created_at:
-    time_for_duration: "180 days ago"    # ← リストでない
-
-# BAD - 要素1つ
-default_filters:
-  orders.created_at:
-    time_for_duration:
-      - "180 days ago"                   # ← 要素が1つだけ
-
-# GOOD - 要素2つのリスト [開始, 期間]
-default_filters:
-  orders.created_at:
-    time_for_duration: ["180 days ago", "180 days"]
-```
-
-**エラー6: パラメータが dimension と filter の両方に出力される**
+**エラー5: パラメータが dimension と filter の両方に出力される**
 ```yaml
 # BAD - パラメータが dimension にも出力されている
 dimensions:
@@ -227,20 +206,7 @@ filters:
     suggestion_list: ...
 ```
 
-**エラー7: データソースフィルター期間の off-by-one**
-```yaml
-# BAD - 180日間なのに179日と計算（両端包含を忘れている）
-default_filters:
-  orders.created_at:
-    time_for_duration: ["179 days ago", "179 days"]
-
-# GOOD - 両端包含で +1 して正しい日数
-default_filters:
-  orders.created_at:
-    time_for_duration: ["180 days ago", "180 days"]
-```
-
-#### エラー8: SQL文字列リテラルにダブルクォート使用
+#### エラー6: SQL文字列リテラルにダブルクォート使用
 Tableau はダブルクォート `"受注"` で文字列を表現するが、SQL/Omni ではダブルクォートはカラム識別子を意味する。
 文字列リテラルはシングルクォート `'受注'` を使うこと。
 
@@ -275,7 +241,7 @@ measures:
 - **パラメータ参照はMustache構文**: `{{filters.<view>.<filter>.value}}`
 - **`sample_queries` の `sorts`**: `- field: <field_name>` のみ有効
 - **dimension に直接 `aggregate_type` を書かない**: `aggregate_type` は `measures` または `level_of_detail` ブロック内でのみ有効。LOD dimension の場合は `level_of_detail.aggregate_type` にネスト必須
-- **`time_for_duration` は必ず2要素リスト**: `[開始, 期間]` 形式。スカラーや要素数不一致は sync エラー。例: `time_for_duration: ["180 days ago", "180 days"]`
+- **Tableau データソースフィルター → Topic `always_where_sql`**: TWB の `<filter class="relative-date">` を Topic の `always_where_sql` に SQL 式で変換する。例: `always_where_sql: ${view.field} >= DATEADD('day', -180, CURRENT_DATE())`
 - **LOD `fixed` 参照フィールドも Topic `fields:` に含める**: LOD dimension の `level_of_detail.fixed` / `always_include` / `always_exclude` で参照されるフィールドは、view 内フィールドとして解決される。Topic で `fields:` を明示する場合、これらのフィールドも `base_view.field_name` として含めること。欠落すると「fields are outside of the topic」エラーになる
   ```yaml
   # 同一 view 内フィールド参照（fixed に素のフィールド名）
@@ -295,11 +261,12 @@ measures:
       aggregate_type: average
       fixed: [ omni_dbt_dwh__dim_store.region ]
   ```
-- **Tableau データソースフィルター → Topic `default_filters`**: TWB の `<filter class="relative-date">` を Topic の `default_filters` に `time_for_duration` 形式で変換すること。Topic に `default_filters` がないとデータソースフィルターが適用されない
+- **Tableau グループ → Omni `groups` dimension**: TWB の `<group>` 要素を dimension の `groups` 構文に変換する。各バケットは `filter.is` + `name` で定義し、`else: Other` でカバー
+- **Tableau 階層 → Omni `group_label` + `drill_fields`**: TWB の `<drill-path>` を `group_label`（共通グループ名）と `drill_fields`（次レベルへのドリルダウン）で再現する
 - **Topic `fields:` リストには join した dim view の全フィールドを含める**: dim view のフィールドを Tableau で使用したものだけに絞ると、LOD の `fixed` キーや join キーなど内部参照フィールドが欠落し sync エラーになる。`fields:` を省略すれば全フィールドが公開されるが、明示的に指定する場合は join した各 view の全フィールドを含めること
 - **パラメータは filter のみに出力する**: パラメータを dimension や measure に変換してはならない。パラメータは常に `filters:` セクションのみに配置する
 - **SQL文字列リテラルはシングルクォート**: Tableau はダブルクォート `"受注"` で文字列を表現するが、SQL/Omni ではダブルクォートはカラム識別子。計算フィールドの文字列リテラルは必ずシングルクォート `'受注'` を使う
-- **データソースフィルター期間は両端包含（+1）、手動変更禁止**: スクリプトが出力した `time_for_duration` の日数を手動で変更しない。両端包含で `last - first + 1` が正しい計算
+- **データソースフィルター期間は両端包含（+1）、手動変更禁止**: スクリプトが出力した `always_where_sql` の日数を手動で変更しない。両端包含で `last - first + 1` が正しい計算
 
 ### Validation
 

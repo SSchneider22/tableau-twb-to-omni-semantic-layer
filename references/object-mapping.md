@@ -28,7 +28,22 @@
 - ネストの深さがjoinの経由パスを表し、末端のviewは `{}` で終端する
 - 例: view_a経由でview_bにjoinする場合 → `joins:\n  view_a:\n    view_b: {}`
 
-## 5) Parameter → filter-only fields
+## 5) Datasource Filter → always_where_sql
+- Tableau `<filter class="relative-date">` (データソースフィルター) → Topic `always_where_sql`
+  - 例: `always_where_sql: ${view.created_at} >= DATEADD('day', -180, CURRENT_DATE())`
+  - 複数フィルターがある場合は `AND` で結合
+
+## 6) Group → groups dimension
+- Tableau `<group>` (inside `<column>`) → Omni dimension with `groups` syntax
+  - 各 `<groupfilter function="union">` → `groups` リストの1エントリ（`filter.is` + `name`）
+  - `else: Other` でグループ外の値をカバー
+
+## 7) Hierarchy → group_label + drill_fields
+- Tableau `<drill-path>` → 各フィールドに `group_label` + `drill_fields` を付与
+  - 同じ階層内のフィールドは共通の `group_label` を持つ
+  - 各フィールドの `drill_fields` に次のレベルのフィールドを設定（最下位は drill_fields なし）
+
+## 8) Parameter → filter-only fields
 - Tableau Parameter は view の `filters:` に filter-only field として作成
 - マッピング詳細:
   - `caption` → `label`
